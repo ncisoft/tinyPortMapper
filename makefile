@@ -1,5 +1,6 @@
 cc_cross=/home/wangyu/Desktop/arm-2014.05/bin/arm-none-linux-gnueabi-g++
 cc_local=g++
+#cc_local=/usr/bin/x86_64-w64-mingw32-g++-posix
 cc_mips24kc_be=/toolchains/lede-sdk-17.01.2-ar71xx-generic_gcc-5.4.0_musl-1.1.16.Linux-x86_64/staging_dir/toolchain-mips_24kc_gcc-5.4.0_musl-1.1.16/bin/mips-openwrt-linux-musl-g++
 cc_mips24kc_le=/toolchains/lede-sdk-17.01.2-ramips-mt7621_gcc-5.4.0_musl-1.1.16.Linux-x86_64/staging_dir/toolchain-mipsel_24kc_gcc-5.4.0_musl-1.1.16/bin/mipsel-openwrt-linux-musl-g++
 cc_arm= /toolchains/lede-sdk-17.01.2-bcm53xx_gcc-5.4.0_musl-1.1.16_eabi.Linux-x86_64/staging_dir/toolchain-arm_cortex-a9_gcc-5.4.0_musl-1.1.16_eabi/bin/arm-openwrt-linux-c++
@@ -7,25 +8,38 @@ cc_mingw_cross=i686-w64-mingw32-g++-posix
 cc_mac_cross=o64-clang++ -stdlib=libc++
 cc_x86=/toolchains/lede-sdk-17.01.2-x86-generic_gcc-5.4.0_musl-1.1.16.Linux-x86_64/staging_dir/toolchain-i386_pentium4_gcc-5.4.0_musl-1.1.16/bin/i486-openwrt-linux-c++
 cc_amd64=/toolchains/lede-sdk-17.01.2-x86-64_gcc-5.4.0_musl-1.1.16.Linux-x86_64/staging_dir/toolchain-x86_64_gcc-5.4.0_musl-1.1.16/bin/x86_64-openwrt-linux-c++
-#cc_bcm2708=/home/wangyu/raspberry/tools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian/bin/arm-linux-gnueabihf-g++ 
+#cc_bcm2708=/home/wangyu/raspberry/tools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian/bin/arm-linux-gnueabihf-g++
 
 
-SOURCES0=main.cpp log.cpp common.cpp fd_manager.cpp
-SOURCES=${SOURCES0} my_ev.cpp -isystem libev
+SOURCES0=
+OBJS= main.o \
+	 log.o \
+	 common.o \
+	 fd_manager.o \
+	 my_ev.o \
+	 socks5.o
+
+SOURCES=${SOURCES0}
 NAME=tinymapper
 
 
 FLAGS= -std=c++11   -Wall -Wextra -Wno-unused-variable -Wno-unused-parameter -Wno-missing-field-initializers ${OPT}
+CFLAGS= -std=c++11 -O2   -Wall -Wextra -Wno-unused-variable -Wno-unused-parameter -Wno-missing-field-initializers -Wno-comment
 TARGETS=amd64 arm mips24kc_be x86  mips24kc_le
 
 TAR=${NAME}_binaries.tar.gz `echo ${TARGETS}|sed -r 's/([^ ]+)/${NAME}_\1/g'` version.txt
 
 export STAGING_DIR=/tmp/    #just for supress warning of staging_dir not define
 
-# targets for nativei (non-cross) compile 
-all:git_version
-	rm -f ${NAME}
-	${cc_local}   -o ${NAME}          -I. ${SOURCES} ${FLAGS} -lrt -ggdb -static -O2
+# targets for nativei (non-cross) compile
+all:git_version ${OBJS}
+	#rm -f ${NAME}
+	${cc_local}   -g -o ${NAME} -isystem libev -I. ${SOURCES} ${OBJS} ${FLAGS} -lrt -ggdb -static -O2
+	ctags *.h *.cpp
+
+%.o: %.cpp makefile
+	echo ${cc_local}  -I.  -isystem libev -c $<
+	${cc_local}  -I.  -isystem libev ${CFLAGS} -g -c $<
 
 freebsd:git_version
 	rm -f ${NAME}
@@ -37,7 +51,7 @@ mingw:git_version
 
 mingw_wepoll:git_version    #to compile you need a pacthed version of libev with wepoll backend
 	rm -f ${NAME}
-	${cc_local}   -o ${NAME}          -I. ${SOURCES0} ${FLAGS}  -ggdb -static -O2   -DNO_LIBEV_EMBED -D_WIN32 -lev -lws2_32 
+	${cc_local}   -o ${NAME}          -I. ${SOURCES0} ${FLAGS}  -ggdb -static -O2   -DNO_LIBEV_EMBED -D_WIN32 -lev -lws2_32
 
 mac:git_version
 	rm -f ${NAME}
@@ -80,7 +94,7 @@ mips24kc_le: git_version
 amd64:git_version
 	${cc_amd64}   -o ${NAME}_$@    -I. ${SOURCES} ${FLAGS} -lrt -static -O2 -lgcc_eh -ggdb
 
-x86:git_version          #to build this you need 'g++-multilib' installed 
+x86:git_version          #to build this you need 'g++-multilib' installed
 	${cc_x86}   -o ${NAME}_$@      -I. ${SOURCES} ${FLAGS} -lrt -static -O2 -lgcc_eh -ggdb
 arm:git_version
 	${cc_arm}   -o ${NAME}_$@      -I. ${SOURCES} ${FLAGS} -lrt -static -O2 -lgcc_eh
@@ -90,7 +104,7 @@ release: ${TARGETS}
 	cp git_version.h version.txt
 	tar -zcvf ${TAR}
 
-#targets for cross compile windows targets on linux 
+#targets for cross compile windows targets on linux
 
 mingw_cross:git_version   #to build this and the below one you need 'mingw-w64' installed (the cross compile version on linux)
 	${cc_mingw_cross}   -o ${NAME}.exe          -I. ${SOURCES} ${FLAGS}  -ggdb -static -O2 -lws2_32
@@ -98,7 +112,7 @@ mingw_cross:git_version   #to build this and the below one you need 'mingw-w64' 
 mingw_cross_wepoll:git_version    #to compile you need a pacthed version of libev with wepoll backend installed
 	${cc_mingw_cross}   -o ${NAME}_wepoll.exe       -I. ${SOURCES0} ${FLAGS}  -ggdb -static -O2   -DNO_LIBEV_EMBED -D_WIN32 -lev -lws2_32
 
-#targets for cross compile macos targets on linux 
+#targets for cross compile macos targets on linux
 
 mac_cross:git_version   #need to install 'osxcross' first.
 	${cc_mac_cross}   -o ${NAME}_mac          -I. ${SOURCES} ${FLAGS}  -ggdb -O2
@@ -109,9 +123,9 @@ release2: ${TARGETS} mingw_cross mingw_cross_wepoll mac_cross
 	cp git_version.h version.txt
 	tar -zcvf ${TAR} ${NAME}.exe ${NAME}_wepoll.exe ${NAME}_mac
 
-clean:	
+clean:
 	rm -f ${TAR}
-	rm -f ${NAME} ${NAME}_cross ${NAME}.exe ${NAME}_wepoll.exe ${NAME}_mac
+	rm -f ${NAME} ${NAME}_cross ${NAME}.exe ${NAME}_wepoll.exe ${NAME}_mac *.o
 	rm -f git_version.h
 
 git_version:

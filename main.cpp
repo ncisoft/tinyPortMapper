@@ -1,9 +1,16 @@
 #include "common.h"
 #include "log.h"
+#include "socks5.h"
 #include "git_version.h"
 #include "fd_manager.h"
+#include <stdlib.h>
+#include <map>
+#include <iostream>
+
+
 
 using  namespace std;
+using std::map; using std::copy;
 
 typedef unsigned long long u64_t;   //this works on most platform,avoid using the PRId64
 typedef long long i64_t;
@@ -16,8 +23,17 @@ int disable_conn_clear=0;
 int max_pending_packet=0;
 int enable_udp=0,enable_tcp=0;
 
+typedef struct
+{
+  string target_hostname;
+  int target_port;
+} target_t;
+
 const int listen_fd_buf_size=2*1024*1024;
 address_t local_addr,remote_addr;
+map<int, target_t> mapTarget;
+string target_hostname;
+int target_port;
 
 int VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV;
 
@@ -500,7 +516,6 @@ void tcp_accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
 		myexit(1);
 	}
 	set_buf_size(new_remote_fd,socket_buf_size);
-	setnonblocking(new_remote_fd);
 
 	ret=connect(new_remote_fd,(struct sockaddr*) &remote_addr.inner,remote_addr.get_len());
 	if(ret!=0)
@@ -510,7 +525,17 @@ void tcp_accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
 	else
 	{
 		mylog(log_debug,"[tcp]connect returned 0\n");
+                struct sockaddr_in c, s;
+                socklen_t sLen = sizeof(s);
+                getsockname(new_fd, (struct sockaddr*) &s, &sLen);
+                mylog(log_debug, "server port=%d\n", ntohs(s.sin_port));
+                auto iter = mapTarget.find(ntohs(s.sin_port));
+                target_t xt= iter->second;
+                mylog(log_debug, "use target %s:%d\n", xt.target_hostname.c_str(), xt.target_port);
+                init_socks5_server(new_remote_fd, xt.target_hostname.c_str(), xt.target_port);
 	}
+        // init socks5 here
+	setnonblocking(new_remote_fd);
 
 	conn_manager_tcp.tcp_pair_list.emplace_back();
 	auto it=conn_manager_tcp.tcp_pair_list.end();
@@ -521,7 +546,7 @@ void tcp_accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
 	tcp_pair_t &tcp_pair=*it;
 	strcpy(tcp_pair.addr_s,ip_addr);
 
-	mylog(log_info,"[tcp]new_connection from {%s},fd1=%d,fd2=%d,tcp connections=%d\n",tcp_pair.addr_s,new_fd,new_remote_fd,(int)conn_manager_tcp.tcp_pair_list.size());
+	mylog(log_info,"[tcp]new_connection!!! from {%s},fd1=%d,fd2=%d,tcp connections=%d\n",tcp_pair.addr_s,new_fd,new_remote_fd,(int)conn_manager_tcp.tcp_pair_list.size());
 
 	tcp_pair.local.fd64=fd_manager.create(new_fd);
 	fd_manager.get_info(tcp_pair.local.fd64).tcp_pair_p= &tcp_pair;
@@ -747,102 +772,96 @@ void sigint_cb(struct ev_loop *l, ev_signal *w, int revents)
 }
 
 
-int event_loop()
+int init_listen_fd()
 {
+  int local_listen_fd_tcp=-1;
+  int local_listen_fd_udp=-1;
+
+  //struct sockaddr_in local_me,remote_dst;
+  int yes = 1;int ret;
+  local_listen_fd_tcp = socket(local_addr.get_type(), SOCK_STREAM, 0);
+  if(local_listen_fd_tcp<0)
+    {
+      mylog(log_fatal,"[tcp]create listen socket failed\n");
+      myexit(1);
+    }
+
+  setsockopt(local_listen_fd_tcp, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)); //avoid annoying bind problem
+  set_buf_size(local_listen_fd_tcp,listen_fd_buf_size);
+  setnonblocking(local_listen_fd_tcp);
 
 
-	int local_listen_fd_tcp=-1;
-	int local_listen_fd_udp=-1;
+  //int epollfd = epoll_create1(0);
+  //const int max_events = 4096;
+  //struct epoll_event ev, events[max_events];
+  //if (epollfd < 0)
+  //{
+  //	mylog(log_fatal,"epoll created return %d\n", epollfd);
+  //	myexit(-1);
+  //}
 
-	//struct sockaddr_in local_me,remote_dst;
-	int yes = 1;int ret;
-	local_listen_fd_tcp = socket(local_addr.get_type(), SOCK_STREAM, 0);
-	if(local_listen_fd_tcp<0)
-	{
-		mylog(log_fatal,"[tcp]create listen socket failed\n");
-		myexit(1);
-	}
+  struct ev_loop * loop= ev_default_loop(0);
+  assert(loop != NULL);
 
-	setsockopt(local_listen_fd_tcp, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)); //avoid annoying bind problem
-	set_buf_size(local_listen_fd_tcp,listen_fd_buf_size);
-	setnonblocking(local_listen_fd_tcp);
+  struct ev_io *tcp_accept_watcher = (struct ev_io*) calloc(1, sizeof(struct ev_io));
 
+  if(enable_tcp)
+    {
+      if (::bind(local_listen_fd_tcp, (struct sockaddr*) &local_addr.inner, local_addr.get_len()) !=0)
+        {
+          mylog(log_fatal,"[tcp]socket bind failed, %s",get_sock_error());
+          myexit(1);
+        }
 
+      if (listen (local_listen_fd_tcp, 512) !=0) //512 is max pending tcp connection,its large enough
+        {
+          mylog(log_fatal,"[tcp]socket listen failed error, %s",get_sock_error());
+          myexit(1);
+        }
 
-
-	local_listen_fd_udp = socket(local_addr.get_type(), SOCK_DGRAM, IPPROTO_UDP);
-	if(local_listen_fd_udp<0)
-	{
-		mylog(log_fatal,"[udp]create listen socket failed\n");
-		myexit(1);
-	}
-	setsockopt(local_listen_fd_udp, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));  //this is not necessary.
-	set_buf_size(local_listen_fd_udp,listen_fd_buf_size);
-	setnonblocking(local_listen_fd_udp);
-
-
-	//int epollfd = epoll_create1(0);
-	//const int max_events = 4096;
-	//struct epoll_event ev, events[max_events];
-	//if (epollfd < 0)
-	//{
-	//	mylog(log_fatal,"epoll created return %d\n", epollfd);
-	//	myexit(-1);
-	//}
-
-	struct ev_loop * loop= ev_default_loop(0);
-	assert(loop != NULL);
-
-	struct ev_io tcp_accept_watcher;
-
-	if(enable_tcp)
-	{
-		if (::bind(local_listen_fd_tcp, (struct sockaddr*) &local_addr.inner, local_addr.get_len()) !=0)
-		{
-			mylog(log_fatal,"[tcp]socket bind failed, %s",get_sock_error());
-			myexit(1);
-		}
-
-	    if (listen (local_listen_fd_tcp, 512) !=0) //512 is max pending tcp connection,its large enough
-	    {
-			mylog(log_fatal,"[tcp]socket listen failed error, %s",get_sock_error());
-			myexit(1);
-	    }
-
-		//ev.events = EPOLLIN;
-		//ev.data.u64 = local_listen_fd_tcp;
-		//int ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, local_listen_fd_tcp, &ev);
-		//if(ret!=0)
-		//{
+      //ev.events = EPOLLIN;
+      //ev.data.u64 = local_listen_fd_tcp;
+      //int ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, local_listen_fd_tcp, &ev);
+      //if(ret!=0)
+      //{
 		//	mylog(log_fatal,"[tcp]epoll EPOLL_CTL_ADD return %d\n", epollfd);
 		//	myexit(-1);
 		//}
-	    ev_io_init(&tcp_accept_watcher, tcp_accept_cb, local_listen_fd_tcp, EV_READ);
-	    ev_io_start(loop, &tcp_accept_watcher);
+	    ev_io_init(tcp_accept_watcher, tcp_accept_cb, local_listen_fd_tcp, EV_READ);
+	    ev_io_start(loop, tcp_accept_watcher);
 	}
 
-	struct ev_io udp_accept_watcher;
+	return 0;
+}
 
-	if(enable_udp)
-	{
-		if (::bind(local_listen_fd_udp, (struct sockaddr*) &local_addr.inner, local_addr.get_len()) == -1)
-		{
-			mylog(log_fatal,"[udp]socket bind error");
-			myexit(1);
-		}
+int event_loop()
+{
+          {
+            cout << "... list target_t" << endl;
+            char listen_ip_buf[80];
+            char *listen_ip;
 
-		//ev.events = EPOLLIN;
-		//ev.data.u64 = local_listen_fd_udp;
-		//int ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, local_listen_fd_udp, &ev);
-		//if(ret!=0)
-		//{
-		//	mylog(log_fatal,"[udp]epoll created return %d\n", epollfd);
-		//	myexit(-1);
-		//}
+            local_addr.to_str(listen_ip_buf);
+            listen_ip = strtok(listen_ip_buf, ":");
+            cout << "listen_ip=" << listen_ip << endl;
 
-	    ev_io_init(&udp_accept_watcher, udp_accept_cb, local_listen_fd_udp, EV_READ);
-	    ev_io_start(loop, &udp_accept_watcher);
-	}
+
+            int i=0;
+            for(auto &t : mapTarget)
+              {
+                char buf[180];
+                auto xt = t.second;
+                printf("candidate target[%d]: %s:%d %d\n", i++, xt.target_hostname.c_str(), xt.target_port, t.first);
+                sprintf(buf, "%s:%d", listen_ip, t.first);
+                printf("listen addr: %s\n", buf);
+                local_addr.from_str(buf);
+                init_listen_fd();
+              }
+
+
+          }
+	struct ev_loop * loop= ev_default_loop(0);
+	assert(loop != NULL);
 
 	//int clear_timer_fd=-1;
 	struct ev_timer clear_timer;
@@ -961,8 +980,8 @@ void process_arg(int argc, char *argv[])
 		myexit(-1);
 	}
 
-	int no_l = 1, no_r = 1;
-	while ((opt = getopt_long(argc, argv, "l:r:tuh:",long_options,&option_index)) != -1)
+	int no_l = 1, no_r = 1, no_T = 1;
+	while ((opt = getopt_long(argc, argv, "l:r:T:tuh:",long_options,&option_index)) != -1)
 	{
 		//string opt_key;
 		//opt_key+=opt;
@@ -976,6 +995,36 @@ void process_arg(int argc, char *argv[])
 		case 'r':
 			no_r = 0;
 			remote_addr.from_str(optarg);
+			break;
+		case 'T':
+                          {
+                            char *hostname;
+                            char *port_s;
+                            string s = optarg;
+                            hostname = strtok(optarg, ":");
+                            target_hostname = hostname;
+                            port_s=strtok(NULL, ":");
+                            if (!port_s)
+                              {
+                                printf("-T format is hostname:port, but got %s\n", s.c_str());
+                                myexit(-1);
+                              }
+                            else
+                              {
+                                target_port = atoi(port_s);
+                                char *port_listen_s = strtok(NULL, ":");
+                                int port_listen = target_port;
+                                if (port_listen_s)
+                                  port_listen = atoi(port_listen_s);
+
+                                target_t target;
+                                target.target_hostname = target_hostname;
+                                target.target_port = target_port;
+                                //printf("-- %s:%d %d\n", target_hostname.c_str(), target_port, port_listen);
+                                mapTarget.insert(pair<int, target_t>(port_listen, target));
+                                no_T = 0;
+                              }
+                          }
 			break;
 		case 't':
 			enable_tcp=1;
@@ -1031,7 +1080,9 @@ void process_arg(int argc, char *argv[])
 		mylog(log_fatal,"error: -l not found\n");
 	if (no_r)
 		mylog(log_fatal,"error: -r not found\n");
-	if (no_l || no_r)
+	if (no_T)
+		mylog(log_fatal,"error: -T not found\n");
+	if (no_l || no_r || no_T)
 		myexit(-1);
 
 	if(enable_tcp==0&&enable_udp==0)
