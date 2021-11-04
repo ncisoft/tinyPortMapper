@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <map>
 #include <iostream>
+#include <sys/socket.h>
 
 
 
@@ -271,6 +272,24 @@ struct conn_manager_tcp_t
 	}
 }conn_manager_tcp;
 
+typedef struct peer_addr
+{
+  char ipAddr[INET_ADDRSTRLEN];
+  int peerPort;
+
+} peer_addr_t;
+
+void get_peer_addr(int fd, peer_addr_t *out)
+{
+  struct sockaddr_in peerAddr;
+
+  socklen_t peerLen = sizeof(peerAddr);
+  int rc = getpeername(fd, (struct sockaddr *)&peerAddr, &peerLen);
+  const char *cp = inet_ntop(AF_INET, &peerAddr.sin_addr, out->ipAddr, sizeof(out->ipAddr));
+  out->peerPort = ntohs(peerAddr.sin_port);
+  return;
+}
+
 void tcp_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
 {
 	if((revents&EV_ERROR) !=0)
@@ -343,7 +362,11 @@ void tcp_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
 		mylog(log_trace,"fd=%d,recv_len=%d\n",my_fd,recv_len);
 		if(recv_len==0)
 		{
-			mylog(log_info,"[tcp]recv_len=%d,connection {%s} closed bc of EOF\n",recv_len,tcp_pair.addr_s);
+                        peer_addr_t peer;
+                        get_peer_addr(my_fd, &peer);
+			mylog(log_info,"[tcp]recv_len=%d,connection {%s} closed bc of EOF from %s:%d\n",
+                              recv_len,tcp_pair.addr_s,
+                              peer.ipAddr , peer.peerPort);
 			conn_manager_tcp.erase_closed(tcp_pair.it);
 			return;
 		}
@@ -526,12 +549,19 @@ void tcp_accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
 	{
 		mylog(log_debug,"[tcp]connect returned 0\n");
                 struct sockaddr_in c, s;
+                peer_addr_t peer;
+                get_peer_addr(new_fd, &peer);
                 socklen_t sLen = sizeof(s);
                 getsockname(new_fd, (struct sockaddr*) &s, &sLen);
                 mylog(log_debug, "server port=%d\n", ntohs(s.sin_port));
                 auto iter = mapTarget.find(ntohs(s.sin_port));
                 target_t xt= iter->second;
-                mylog(log_debug, "use target %s:%d\n", xt.target_hostname.c_str(), xt.target_port);
+                  {
+                    int log_level_orig = log_level;
+                    log_level = log_trace;
+                    mylog(log_debug, "use target %s:%d from:%s\n", xt.target_hostname.c_str(), xt.target_port, peer.ipAddr);
+                    log_level = log_level_orig;
+                  }
                 init_socks5_server(new_remote_fd, xt.target_hostname.c_str(), xt.target_port);
 	}
         // init socks5 here
