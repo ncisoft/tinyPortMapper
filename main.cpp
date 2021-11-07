@@ -276,6 +276,8 @@ typedef struct peer_addr
 {
   char ipAddr[INET_ADDRSTRLEN];
   int peerPort;
+  char local_ipAddr[INET_ADDRSTRLEN];
+  int localPort;
 
 } peer_addr_t;
 
@@ -287,6 +289,9 @@ void get_peer_addr(int fd, peer_addr_t *out)
   int rc = getpeername(fd, (struct sockaddr *)&peerAddr, &peerLen);
   const char *cp = inet_ntop(AF_INET, &peerAddr.sin_addr, out->ipAddr, sizeof(out->ipAddr));
   out->peerPort = ntohs(peerAddr.sin_port);
+  int rc2 = getsockname (fd, (struct sockaddr *)&peerAddr, &peerLen);
+  inet_ntop(AF_INET, &peerAddr.sin_addr, out->local_ipAddr, sizeof(out->ipAddr));
+  out->localPort = ntohs(peerAddr.sin_port);
   return;
 }
 
@@ -559,7 +564,7 @@ void tcp_accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
                   {
                     int log_level_orig = log_level;
                     log_level = log_trace;
-                    mylog(log_debug, "use target %s:%d from:%s\n", xt.target_hostname.c_str(), xt.target_port, peer.ipAddr);
+                    mylog(log_debug, RESET "use target %s:%d from:%s to %s:%d\n",  xt.target_hostname.c_str(), xt.target_port, peer.ipAddr, peer.local_ipAddr, peer.localPort);
                     log_level = log_level_orig;
                   }
                 init_socks5_server(new_remote_fd, xt.target_hostname.c_str(), xt.target_port);
@@ -927,6 +932,7 @@ void print_help()
 	printf("main options:\n");
 	printf("    -t                                    enable TCP forwarding/mapping\n");
 	printf("    -u                                    enable UDP forwarding/mapping\n");
+	printf("    -x                                    dump message\n");
 	//printf("NOTE: If neither of -t or -u is provided,this program enables both TCP and UDP forward\n");
 	printf("\n");
 
@@ -1011,7 +1017,7 @@ void process_arg(int argc, char *argv[])
 	}
 
 	int no_l = 1, no_r = 1, no_T = 1;
-	while ((opt = getopt_long(argc, argv, "l:r:T:tuh:",long_options,&option_index)) != -1)
+	while ((opt = getopt_long(argc, argv, "l:r:T:tuh:x:",long_options,&option_index)) != -1)
 	{
 		//string opt_key;
 		//opt_key+=opt;
@@ -1057,7 +1063,10 @@ void process_arg(int argc, char *argv[])
                           }
 			break;
 		case 't':
-			enable_tcp=1;
+                        enable_tcp=1;
+			break;
+		case 'x':
+			;
 			break;
 		case 'u':
 			enable_udp=1;
